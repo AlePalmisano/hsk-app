@@ -1581,6 +1581,7 @@ const DIALOGUES = {
 };
 
 // ═══ UTILS ═══
+const stripTones=s=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ü/g,'v').replace(/Ü/g,'V');
 const shuffle=a=>{const b=[...a];for(let i=b.length-1;i>0;i--){const j=0|Math.random()*(i+1);[b[i],b[j]]=[b[j],b[i]]}return b};
 const $=id=>document.getElementById(id);
 const app=document.getElementById('app');
@@ -1688,20 +1689,41 @@ function renderLesson(){
 }
 
 // ═══ GET VOCAB FOR CURRENT CONTEXT ═══
-function getV(){
+function getV(cumulative){
   if(S.lessonId==='all'){
     const all=LESSONS.flatMap(l=>l.vocab);
-    return [...all,...NOTES_VOCAB.map(v=>({h:v.h,p:v.p,e:v.e}))];
+    return dedup([...all,...NOTES_VOCAB.map(v=>({h:v.h,p:v.p,e:v.e}))]);
   }
   if(S.lessonId==='notes')return NOTES_VOCAB.map(v=>({h:v.h,p:v.p,e:v.e}));
   const L=LESSONS.find(l=>l.id===S.lessonId);
-  return L?L.vocab:[];
+  if(!L)return[];
+  if(!cumulative)return L.vocab;
+  // Cumulative: this lesson + all prior
+  const idx=LESSONS.indexOf(L);
+  const all=[];
+  for(let i=0;i<=idx;i++)LESSONS[i].vocab.forEach(v=>{if(!all.find(x=>x.h===v.h))all.push(v)});
+  return all;
 }
+function dedup(arr){const s=new Set();return arr.filter(v=>{if(s.has(v.h))return false;s.add(v.h);return true})}
 function getS(){
-  if(S.lessonId==='all')return LESSONS.flatMap(l=>l.sentences);
+  if(S.lessonId==='all'){
+    let all=LESSONS.flatMap(l=>l.sentences);
+    for(const k in EXTRA_SENTENCES)all=all.concat(EXTRA_SENTENCES[k].map(s=>({p:s.py,e:s.en,w:s.w})));
+    return dedupS(all);
+  }
   const L=LESSONS.find(l=>l.id===S.lessonId);
-  return L?L.sentences:[];
+  if(!L)return[];
+  let pool=[...L.sentences];
+  const ex=EXTRA_SENTENCES[L.id];
+  if(ex)pool=pool.concat(ex.map(s=>({p:s.py,e:s.en,w:s.w})));
+  // Add dialogue lines that have words
+  const dlgs=DIALOGUES[L.id]||[];
+  dlgs.forEach(dlg=>dlg.lines.forEach(l=>{
+    if(l.cn)pool.push({p:l.py,e:l.en,w:l.cn.replace(/[？。！，、]/g,'').split('')});
+  }));
+  return dedupS(pool);
 }
+function dedupS(arr){const s=new Set();return arr.filter(x=>{const k=x.p||x.py;if(s.has(k))return false;s.add(k);return true})}
 function goBack(){
   if(S.lessonId==='all'||S.lessonId==='notes'){S.screen='home';S.lessonId=null;}
   else{S.screen='lesson';}
@@ -1710,7 +1732,7 @@ function goBack(){
 
 // ═══ FLASHCARDS ═══
 function renderFlash(){
-  const cards=shuffle(getV());
+  const cards=shuffle(getV(true));
   if(!cards.length){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Flashcards</div></div></div><p style="padding:40px;color:var(--dim);text-align:center">No cards available.</p>`;return}
   let i=0,f=false,k=0;
   function d(){
@@ -1719,10 +1741,10 @@ function renderFlash(){
     <div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Flashcards</div><div class="s">${i%cards.length+1}/${cards.length} · ${k} known</div></div></div>
     <div class="pbar"><div class="fill" style="width:${pct}%"></div></div>
     <div style="padding:36px 20px;display:flex;flex-direction:column;align-items:center" class="fi">
-      <div class="fcard" onclick="window._ff()">
+      <button class="fcard" style="appearance:none;-webkit-appearance:none" ontouchend="window._ff();event.preventDefault()" onclick="window._ff()">
         ${!f?`<div style="font-size:17px;font-weight:500">${c.e}</div><div style="margin-top:20px;font-size:12px;color:var(--muted)">tap to reveal</div>`
         :`<div style="font-size:44px;font-weight:700;color:var(--hanzi)">${c.h}</div><div style="font-size:20px;color:var(--pinyin);margin-top:8px">${c.p}</div><div style="font-size:14px;color:var(--dim);margin-top:8px">${c.e}</div>`}
-      </div>
+      </button>
       ${f?`<div style="display:flex;gap:12px;margin-top:20px;width:100%;max-width:380px">
         <button style="flex:1;padding:13px;border-radius:10px;border:1px solid rgba(248,113,113,.3);background:rgba(248,113,113,.1);color:var(--err);font-size:14px;font-weight:600" onclick="window._fn(0)">Still learning</button>
         <button style="flex:1;padding:13px;border-radius:10px;border:1px solid rgba(52,211,153,.3);background:rgba(52,211,153,.1);color:var(--ok);font-size:14px;font-weight:600" onclick="window._fn(1)">Got it!</button>
@@ -1736,7 +1758,7 @@ function renderFlash(){
 
 // ═══ QUIZ ═══
 function renderQuiz(){
-  const vocab=getV();
+  const vocab=getV(true);
   if(vocab.length<4){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Quiz</div></div></div><p style="padding:40px;color:var(--dim);text-align:center">Need at least 4 words.</p>`;return}
   const qs=shuffle(vocab).slice(0,Math.min(20,vocab.length)).map(q=>{
     const wr=shuffle(vocab.filter(v=>v.p!==q.p)).slice(0,3);
@@ -1744,7 +1766,7 @@ function renderQuiz(){
   });
   let idx=0,sc=0,sel=null;
   function d(){
-    if(idx>=qs.length){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Quiz Complete</div></div></div><div style="padding:40px;text-align:center" class="fi"><div class="mono" style="font-size:56px;font-weight:900;color:var(--accent)">${sc}/${qs.length}</div><div style="font-size:15px;color:var(--dim);margin-top:8px">${sc>=qs.length*.8?'Excellent!':sc>=qs.length*.5?'Good progress!':'Keep practicing!'}</div><button class="bp" style="margin-top:20px" onclick="goBack()">Done</button></div>`;return}
+    if(idx>=qs.length){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Quiz Complete</div></div></div><div style="padding:40px;text-align:center" class="fi"><div class="mono" style="font-size:56px;font-weight:900;color:var(--accent)">${sc}/${qs.length}</div><div style="font-size:15px;color:var(--dim);margin-top:8px">${sc>=qs.length*.8?'Excellent!':sc>=qs.length*.5?'Good progress!':'Keep practicing!'}</div><button class="bp" style="margin-top:20px" onclick="goBack()">Done</button><button class="bp" style="margin-top:8px;background:var(--hsk2)" onclick="S.screen='quiz';render()">🔄 New Round</button></div>`;return}
     const q=qs[idx];
     app.innerHTML=`
     <div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Quiz</div><div class="s">Q${idx+1}/${qs.length} · Score: ${sc}</div></div></div>
@@ -1796,19 +1818,19 @@ function renderType(){
 
 // ═══ MATCH ═══
 function renderMatch(){
-  const vocab=getV();
+  const vocab=getV(true);
   if(vocab.length<3){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Match</div></div></div><p style="padding:40px;color:var(--dim);text-align:center">Need at least 3 words.</p>`;return}
   const pk=shuffle(vocab).slice(0,Math.min(6,vocab.length));
   const L=pk.map((v,i)=>({id:'l'+i,t:v.e,pid:i}));
   const R=shuffle(pk.map((v,i)=>({id:'r'+i,t:v.p,h:v.h,pid:i})));
   let sl=null,sp=null,mt=[],wr=null,at=0;
   function d(){
-    if(mt.length===L.length){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Match</div></div></div><div style="padding:36px;text-align:center" class="fi"><div style="font-size:38px">🎉</div><div style="font-size:18px;font-weight:700;color:var(--ok);margin-top:8px">All matched!</div><div style="font-size:13px;color:var(--dim);margin-top:6px">${at} attempts</div><button class="bp" style="margin-top:18px" onclick="goBack()">Done</button></div>`;return}
+    if(mt.length===L.length){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Match</div></div></div><div style="padding:36px;text-align:center" class="fi"><div style="font-size:38px">🎉</div><div style="font-size:18px;font-weight:700;color:var(--ok);margin-top:8px">All matched!</div><div style="font-size:13px;color:var(--dim);margin-top:6px">${at} attempts</div><button class="bp" style="margin-top:18px" onclick="goBack()">Done</button><button class="bp" style="margin-top:8px;background:var(--hsk2)" onclick="S.screen='match';render()">🔄 New Round</button></div>`;return}
     app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Matching</div><div class="s">${mt.length}/${L.length} · ${at} tries</div></div></div>
     <div style="padding:18px 20px" class="fi"><div style="font-size:12px;color:var(--muted);margin-bottom:12px;text-align:center">Tap English, then its pinyin match</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div style="display:flex;flex-direction:column;gap:8px">${L.map(x=>{const m=mt.includes(x.pid),s=sl===x.id;return`<button class="mpair" style="${m?'border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.1);opacity:.5':s?'border-color:var(--accent);background:rgba(240,192,64,.15)':''}" onclick="window._ml('${x.id}',${x.pid})">${x.t}</button>`}).join('')}</div>
-      <div style="display:flex;flex-direction:column;gap:8px">${R.map(x=>{const m=mt.includes(x.pid),w=wr===x.id;return`<button class="mpair" style="${m?'border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.1);opacity:.5':w?'border-color:var(--err);background:rgba(248,113,113,.12)':''}" onclick="window._mr('${x.id}',${x.pid})"><div style="color:var(--hanzi);font-weight:700;font-size:17px">${x.h}</div><div style="color:var(--pinyin);font-size:12px;margin-top:1px">${x.t}</div></button>`}).join('')}</div>
+      <div style="display:flex;flex-direction:column;gap:8px">${L.map(x=>{const m=mt.includes(x.pid),s=sl===x.id;return`<button class="mpair" style="${m?'border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.1);opacity:.5':s?'border-color:var(--accent);background:rgba(240,192,64,.15)':''}" ontouchend="window._ml('${x.id}',${x.pid});event.preventDefault()" onclick="window._ml('${x.id}',${x.pid})">${x.t}</button>`}).join('')}</div>
+      <div style="display:flex;flex-direction:column;gap:8px">${R.map(x=>{const m=mt.includes(x.pid),w=wr===x.id;return`<button class="mpair" style="${m?'border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.1);opacity:.5':w?'border-color:var(--err);background:rgba(248,113,113,.12)':''}" ontouchend="window._mr('${x.id}',${x.pid});event.preventDefault()" onclick="window._mr('${x.id}',${x.pid})"><div style="color:var(--hanzi);font-weight:700;font-size:17px">${x.h}</div><div style="color:var(--pinyin);font-size:12px;margin-top:1px">${x.t}</div></button>`}).join('')}</div>
     </div></div>`;
   }
   window._ml=(id,pid)=>{if(mt.includes(pid))return;sl=id;sp=pid;d()};
@@ -1820,10 +1842,12 @@ function renderMatch(){
 function renderSent(){
   const sents=shuffle(getS());
   if(!sents.length){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Sentences</div></div></div><p style="padding:40px;color:var(--dim);text-align:center">No sentences for this lesson.</p>`;return}
-  let mode=null,idx=0,sc=0,placed=[],avail=[],res=null;
+  let mode=null,idx=0,sc=0,placed=[],avail=[],res=null,toneOff=false;
   function init(){const s=sents[idx%sents.length];avail=shuffle(s.w.map((w,i)=>({id:i,t:w})));placed=[];res=null}
   function d(){
-    if(!mode){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Sentences</div></div></div><div style="padding:36px 20px;text-align:center"><div style="font-size:15px;color:var(--dim);margin-bottom:20px">Choose mode:</div><button class="mbtn" style="margin-bottom:8px;justify-content:center" onclick="window._sm('r')"><span style="color:var(--accent);font-weight:600">🧩 Rearrange Words</span></button><button class="mbtn" style="justify-content:center" onclick="window._sm('t')"><span style="color:var(--pinyin);font-weight:600">✍️ Translate to Pinyin</span></button></div>`;return}
+    if(!mode){app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Sentences</div></div></div><div style="padding:36px 20px;text-align:center"><div style="font-size:15px;color:var(--dim);margin-bottom:20px">Choose mode:</div><button class="mbtn" style="margin-bottom:8px;justify-content:center" onclick="window._sm('r')"><span style="color:var(--accent);font-weight:600">🧩 Rearrange Words</span></button><button class="mbtn" style="justify-content:center" onclick="window._sm('t')"><span style="color:var(--pinyin);font-weight:600">✍️ Translate to Pinyin</span></button>
+      <button class="mbtn" style="margin-top:4px;justify-content:center" onclick="window._stToggle()"><span style="font-weight:600;color:var(--dim)">🔤 Tone sensitivity: <strong style="color:var(--accent)">${toneOff?'OFF':'ON'}</strong></span></button>
+      </div>`;return}
     const s=sents[idx%sents.length];
     if(mode==='r'){
       app.innerHTML=`<div class="header"><button class="back" onclick="goBack()">←</button><div><div class="t">Rearrange</div><div class="s">${idx%sents.length+1}/${sents.length} · Score: ${sc}</div></div></div>
@@ -1852,10 +1876,11 @@ function renderSent(){
     }
   }
   window._sm=m=>{mode=m;init();d()};
+  window._stToggle=()=>{toneOff=!toneOff;d()};
   window._sa=id=>{const w=avail.find(x=>x.id===id);if(w){placed.push(w);avail=avail.filter(x=>x.id!==id);d()}};
   window._sr=id=>{if(res!==null)return;const w=placed.find(x=>x.id===id);if(w){avail.push(w);placed=placed.filter(x=>x.id!==id);d()}};
   window._sc=()=>{const s=sents[idx%sents.length];res=placed.map(w=>w.t).join('')===s.w.join('');if(res)sc++;d()};
-  window._stc=()=>{if(res!==null)return;const el=$('si');if(!el||!el.value.trim())return;const s=sents[idx%sents.length];res=el.value.trim().toLowerCase().replace(/\s+/g,' ')===s.p.toLowerCase().replace(/\s+/g,' ');if(res)sc++;d()};
+  window._stc=()=>{if(res!==null)return;const el=$('si');if(!el||!el.value.trim())return;const s=sents[idx%sents.length];const uv=el.value.trim().toLowerCase().replace(/\s+/g,' '),sv=(s.p||s.py||'').toLowerCase().replace(/\s+/g,' ');res=toneOff?stripTones(uv)===stripTones(sv):uv===sv;if(res)sc++;d()};
   window._sn=()=>{idx++;res=null;init();d()};
   d();
 }
@@ -2001,7 +2026,6 @@ function renderAI(){
 
   function d(){
     if(mode==='menu'){
-      genBatch();
       app.innerHTML=`
       <div class="header"><button class="back" onclick="S.screen='lesson';render()">←</button><div><div class="t">Random Practice</div><div class="s">${L.level} · Lesson ${L.num}</div></div></div>
       <div style="padding:20px" class="fi">
@@ -2108,7 +2132,7 @@ function renderAI(){
   };
   window._rpNxt=()=>{sIdx++;res=null;if(sIdx<batch.length)initRound();d()};
 
-  d();
+  genBatch();d();
 }
 
 
